@@ -690,6 +690,13 @@ void MarniDX::DrawTriangles3D(const float* verts, int triCount, MarniHandle tex,
     }
 }
 
+// Scene depth image: not implemented on the GL backend yet (mod backgrounds
+// render without model occlusion here).
+void MarniDX::SetDepthImage(const float*, int, int) {}
+bool MarniDX::HasDepthImage() const { return false; }
+void MarniDX::SetModelFog(float, float, float, float, float, float) {}
+void MarniDX::DrawDepthImage() {}
+
 // ---------------------------------------------------------------------------
 // Readback
 // ---------------------------------------------------------------------------

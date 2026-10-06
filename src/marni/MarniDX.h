@@ -204,6 +204,23 @@ public:
                          bool depthWrite = true);
 
     // ----------------------------------------------------------------------
+    // Scene depth image (generated mod backgrounds, e.g. the Silent Hill
+    // crossover). `ndc` is w*h floats of depth-buffer values in [0,1] - the
+    // same (vz - 1) / (131072 - 1) mapping DrawTriangles3D's vertices use -
+    // row-major, top row first, covering the whole game screen. nullptr (or
+    // w/h <= 0) removes it. DrawDepthImage() then writes it into the depth
+    // buffer (LESS_EQUAL, colour untouched) so the TMD models drawn after it
+    // are hidden behind the pre-rendered walls the way a mask would hide them.
+    // ----------------------------------------------------------------------
+    void SetDepthImage(const float* ndc, int w, int h);
+    bool HasDepthImage() const;
+    // Distance fog on the depth-buffered model path (DrawTriangles3D): colour
+    // 0..1, linear from nearZ to farZ in view-space Z, max blend `weight`
+    // (0 = off, the default).
+    void SetModelFog(float r, float g, float b, float nearZ, float farZ, float weight);
+    void DrawDepthImage();
+
+    // ----------------------------------------------------------------------
     // Backbuffer readback (used by CMarniBits::SaveBitmapToFile, the original
     // +0x2064 framebuffer-proxy path). Allocates a contiguous RGBA8 buffer via
     // operator_new and returns it in *outPixels + dimensions. Caller owns the

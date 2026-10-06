@@ -41,6 +41,15 @@ static DWORD s_axisMin[2][MAX_JOYSTICKS];
 static DWORD s_axisMax[2][MAX_JOYSTICKS];
 static bool  s_axisUsable[2][MAX_JOYSTICKS];
 
+// [Input] Gamepad=0 in config.ini turns every controller path off (ConfigFile.cpp).
+extern int g_gamepadEnabled;
+
+static void InputLog(const char* line)
+{
+    FILE* f = fopen("input.log", "a");
+    if (f) { fputs(line, f); fclose(f); }
+}
+
 static DWORD NormalizeAxis(int axis, int joy, DWORD raw)
 {
     DWORD lo = s_axisMin[axis][joy], hi = s_axisMax[axis][joy];
@@ -165,6 +174,7 @@ void CMarniDirectInput::UpdateAllInputStates(MasterInputState* pState)
     int maxJoy = (int)pState->joystickCount;
     if (maxJoy > MAX_JOYSTICKS) maxJoy = MAX_JOYSTICKS;
 
+    if (!g_gamepadEnabled) maxJoy = 0;
     for (int i = 0; i < maxJoy; i++) {
         if (i == 0 && s_xinputOwnsSlot0) {
             continue;  // XInput already published this entry
@@ -281,6 +291,14 @@ void CMarniDirectInput::InitJoysticks(MasterInputState* pState)
     // whenever a pad answers, and it must survive the "too many devices"
     // bail-out below.
     s_xinputOwnsSlot0 = false;
+    {
+        FILE* f = fopen("input.log", "w");
+        if (f) { fputs("---- input devices ----\n", f); fclose(f); }
+    }
+    if (!g_gamepadEnabled) {
+        InputLog("[input] Gamepad=0 in config.ini: controllers disabled, keyboard only\n");
+        MarniXInput::SetEnabled(false);
+    }
     MarniXInput::Init();
 
     // 0x0042077c: Get number of joystick devices.
@@ -355,6 +373,15 @@ void CMarniDirectInput::InitJoysticks(MasterInputState* pState)
             DWORD y = NormalizeAxis(1, i, pJoy->info.dwYpos);
             s_axisUsable[0][i] = (pJoy->info.dwFlags & JOY_RETURNX) && x >= 0x3000 && x <= 0xC000;
             s_axisUsable[1][i] = (pJoy->info.dwFlags & JOY_RETURNY) && y >= 0x3000 && y <= 0xC000;
+            {
+                char line[200];
+                sprintf(line, "[winmm] joy %d range X %lu..%lu Y %lu..%lu rest X=%lu Y=%lu -> X %s, Y %s\n", i,
+                        (unsigned long)joyCaps.wXmin, (unsigned long)joyCaps.wXmax,
+                        (unsigned long)joyCaps.wYmin, (unsigned long)joyCaps.wYmax,
+                        (unsigned long)pJoy->info.dwXpos, (unsigned long)pJoy->info.dwYpos,
+                        s_axisUsable[0][i] ? "used" : "IGNORED", s_axisUsable[1][i] ? "used" : "IGNORED");
+                InputLog(line);
+            }
             if (!s_axisUsable[0][i] || !s_axisUsable[1][i]) {
                 printf("Joy[%d] axis ignored (not centred at start): X=%s Y=%s [%s]\n", i,
                        s_axisUsable[0][i] ? "ok" : "off", s_axisUsable[1][i] ? "ok" : "off",

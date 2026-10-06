@@ -66,10 +66,15 @@ VS_OUTPUT main(VS_INPUT input)
 // divide while making every interpolator perspective-correct. It shows up
 // worst on big polygons close to the camera at an oblique angle - the door
 // panel in the room-transition animation.
+//
+// TEXCOORD1 carries a distance-fog weight (mod rooms only - see SetModelFog);
+// with fog off it is 0 and the output is unchanged. The quad PS reads only the
+// leading pos/tex/col, so the persp path keeps working with this VS.
 static const char* g_Model3DVS_Source = R"(
 cbuffer SpriteCB : register(b0) { row_major float4x4 g_MVP; };
+cbuffer FogCB    : register(b1) { float4 g_FogColor; float4 g_FogParams; };
 struct VS_INPUT  { float4 pos:POSITION; float2 tex:TEXCOORD0; float4 col:COLOR0; };
-struct VS_OUTPUT { float4 pos:SV_Position; float2 tex:TEXCOORD0; float4 col:COLOR0; };
+struct VS_OUTPUT { float4 pos:SV_Position; float2 tex:TEXCOORD0; float4 col:COLOR0; float fog:TEXCOORD1; };
 VS_OUTPUT main(VS_INPUT input)
 {
     VS_OUTPUT o;
@@ -78,8 +83,31 @@ VS_OUTPUT main(VS_INPUT input)
     o.pos = float4(p.x * w, p.y * w, input.pos.z * w, w);
     o.tex = input.tex;
     o.col = input.col;
+    o.fog = g_FogParams.z * saturate((w - g_FogParams.x) / max(g_FogParams.y - g_FogParams.x, 1.0f));
     return o;
 }
+)";
+
+static const char* g_Model3DPS_Source = R"(
+Texture2D    g_Texture : register(t0);
+SamplerState g_Sampler : register(s0);
+cbuffer FogCB : register(b1) { float4 g_FogColor; float4 g_FogParams; };
+struct PS_INPUT { float4 pos:SV_Position; float2 tex:TEXCOORD0; float4 col:COLOR0; float fog:TEXCOORD1; };
+float4 main(PS_INPUT i) : SV_Target
+{
+    float4 c = g_Texture.Sample(g_Sampler, i.tex) * i.col;
+    c.rgb = lerp(c.rgb, g_FogColor.rgb, i.fog);
+    return c;
+}
+)";
+
+// Depth-image pass: writes a pre-rendered background's depth (an R32F texture)
+// into the depth buffer. No colour output; the blend state masks it anyway.
+static const char* g_DepthPS_Source = R"(
+Texture2D<float> g_Depth   : register(t0);
+SamplerState     g_Sampler : register(s0);
+struct PS_INPUT { float4 pos:SV_Position; float2 tex:TEXCOORD0; float4 col:COLOR0; };
+float main(PS_INPUT i) : SV_Depth { return g_Depth.Sample(g_Sampler, i.tex); }
 )";
 
 static const char* g_QuadPS_Source = R"(
@@ -163,6 +191,15 @@ struct MarniDX::Impl {
     ID3D11VertexShader*      model3DVS     = nullptr;
     ID3D11InputLayout*       model3DLayout = nullptr;
     ID3D11Buffer*            model3DVB     = nullptr;
+
+    // scene depth image (SetDepthImage / DrawDepthImage)
+    ID3D11PixelShader*       depthPS       = nullptr;
+    ID3D11PixelShader*       model3DPS     = nullptr;   // fogged model PS
+    ID3D11Buffer*            fogCB         = nullptr;
+    ID3D11BlendState*        blendNoColor  = nullptr;
+    ID3D11DepthStencilState* depthImageState = nullptr;
+    ID3D11Texture2D*         depthImgTex   = nullptr;
+    ID3D11ShaderResourceView* depthImgSRV  = nullptr;
 
     // fallback white 1x1 texture + SRV (handle index 1 reserved)
     ID3D11Texture2D*         whiteTex      = nullptr;
@@ -429,6 +466,13 @@ void MarniDX::Impl::ReleaseAllState()
     if (model3DLayout) { model3DLayout->Release(); model3DLayout = nullptr; }
     if (model3DVS)     { model3DVS->Release();     model3DVS     = nullptr; }
     if (model3DVB)     { model3DVB->Release();     model3DVB     = nullptr; }
+    if (depthImgSRV)   { depthImgSRV->Release();   depthImgSRV   = nullptr; }
+    if (depthImgTex)   { depthImgTex->Release();   depthImgTex   = nullptr; }
+    if (depthPS)       { depthPS->Release();       depthPS       = nullptr; }
+    if (model3DPS)     { model3DPS->Release();     model3DPS     = nullptr; }
+    if (fogCB)         { fogCB->Release();         fogCB         = nullptr; }
+    if (blendNoColor)  { blendNoColor->Release();  blendNoColor  = nullptr; }
+    if (depthImageState) { depthImageState->Release(); depthImageState = nullptr; }
     if (depthEnabled)  { depthEnabled->Release();  depthEnabled  = nullptr; }
     if (depthDisabled) { depthDisabled->Release(); depthDisabled = nullptr; }
     if (depthTestNoWrite) { depthTestNoWrite->Release(); depthTestNoWrite = nullptr; }
@@ -623,6 +667,53 @@ BOOL MarniDX::Create(HWND hWnd, int width, int height, BOOL fullScreen,
     if (!CompileModel3DShader(p->device, &p->model3DVS, &p->model3DLayout)) {
         OutputDebugStringA("[MarniDX] model shader compile failed\n");
         p->ReleaseAllState(); return FALSE;
+    }
+
+    // Scene depth-image pass (optional: the game runs without it, mod
+    // backgrounds just lose their occlusion).
+    {
+        ID3DBlob* blob = nullptr; ID3DBlob* err = nullptr;
+        if (SUCCEEDED(D3DCompile(g_DepthPS_Source, strlen(g_DepthPS_Source), "DepthPS",
+                                 nullptr, nullptr, "main", "ps_4_0",
+                                 D3DCOMPILE_ENABLE_STRICTNESS, 0, &blob, &err))) {
+            p->device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(),
+                                         nullptr, &p->depthPS);
+            blob->Release();
+        } else if (err) {
+            OutputDebugStringA("[MarniDX] depth PS compile: ");
+            OutputDebugStringA((char*)err->GetBufferPointer());
+            OutputDebugStringA("\n");
+            err->Release();
+        }
+        blob = nullptr; err = nullptr;
+        if (SUCCEEDED(D3DCompile(g_Model3DPS_Source, strlen(g_Model3DPS_Source), "Model3DPS",
+                                 nullptr, nullptr, "main", "ps_4_0",
+                                 D3DCOMPILE_ENABLE_STRICTNESS, 0, &blob, &err))) {
+            p->device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(),
+                                         nullptr, &p->model3DPS);
+            blob->Release();
+        } else if (err) {
+            OutputDebugStringA("[MarniDX] model PS compile: ");
+            OutputDebugStringA((char*)err->GetBufferPointer());
+            OutputDebugStringA("\n");
+            err->Release();
+        }
+        float fog0[8] = { 0, 0, 0, 0, 0, 1, 0, 0 };   // weight 0 = fog off
+        D3D11_BUFFER_DESC fb = {};
+        fb.Usage = D3D11_USAGE_DEFAULT;
+        fb.ByteWidth = sizeof(fog0);
+        fb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        D3D11_SUBRESOURCE_DATA fd = {};
+        fd.pSysMem = fog0;
+        p->device->CreateBuffer(&fb, &fd, &p->fogCB);
+        D3D11_BLEND_DESC bn = {};
+        bn.RenderTarget[0].RenderTargetWriteMask = 0;
+        p->device->CreateBlendState(&bn, &p->blendNoColor);
+        D3D11_DEPTH_STENCIL_DESC di = {};
+        di.DepthEnable    = TRUE;
+        di.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+        di.DepthFunc      = D3D11_COMPARISON_LESS_EQUAL;
+        p->device->CreateDepthStencilState(&di, &p->depthImageState);
     }
 
     // vertex buffer (6 verts/sprite * 512 sprites)
@@ -1225,7 +1316,11 @@ void MarniDX::DrawTriangles3D(const float* verts, int triCount, MarniHandle tex,
     p->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     p->context->VSSetShader(p->model3DVS, nullptr, 0);
     p->context->VSSetConstantBuffers(0, 1, &p->spriteCB);
-    p->context->PSSetShader(p->quadPS, nullptr, 0);
+    if (p->fogCB) {
+        p->context->VSSetConstantBuffers(1, 1, &p->fogCB);
+        p->context->PSSetConstantBuffers(1, 1, &p->fogCB);
+    }
+    p->context->PSSetShader((p->model3DPS && p->fogCB) ? p->model3DPS : p->quadPS, nullptr, 0);
 
     ID3D11ShaderResourceView* srv = nullptr;
     if ((int)tex > 0 && (int)tex < MARNI_MAX_TEXTURES)
@@ -1262,6 +1357,92 @@ void MarniDX::DrawTriangles3D(const float* verts, int triCount, MarniHandle tex,
         p->context->OMSetDepthStencilState(p->depthDisabled, 0);
 }
 
+void MarniDX::SetDepthImage(const float* ndc, int w, int h)
+{
+    Impl* p = m_pImpl;
+    if (!p || !p->device) return;
+    if (p->depthImgSRV) { p->depthImgSRV->Release(); p->depthImgSRV = nullptr; }
+    if (p->depthImgTex) { p->depthImgTex->Release(); p->depthImgTex = nullptr; }
+    if (!ndc || w <= 0 || h <= 0) return;
+
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width = (UINT)w; td.Height = (UINT)h;
+    td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R32_FLOAT;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_IMMUTABLE;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA sd = {};
+    sd.pSysMem = ndc;
+    sd.SysMemPitch = (UINT)w * sizeof(float);
+    if (FAILED(p->device->CreateTexture2D(&td, &sd, &p->depthImgTex))) return;
+    if (FAILED(p->device->CreateShaderResourceView(p->depthImgTex, nullptr, &p->depthImgSRV))) {
+        p->depthImgTex->Release(); p->depthImgTex = nullptr;
+    }
+}
+
+void MarniDX::SetModelFog(float r, float g, float b, float nearZ, float farZ, float weight)
+{
+    Impl* p = m_pImpl;
+    if (!p || !p->context || !p->fogCB) return;
+    float v[8] = { r, g, b, 1.0f, nearZ, farZ, weight, 0.0f };
+    p->context->UpdateSubresource(p->fogCB, 0, nullptr, v, 0, 0);
+}
+
+bool MarniDX::HasDepthImage() const
+{
+    return m_pImpl && m_pImpl->depthImgSRV && m_pImpl->depthPS;
+}
+
+void MarniDX::DrawDepthImage()
+{
+    Impl* p = m_pImpl;
+    if (!p || !p->ready || !p->context || !p->depthImgSRV || !p->depthPS ||
+        !p->blendNoColor || !p->depthImageState || !p->quadVB || !p->quadVS ||
+        !p->quadLayout || !p->spriteCB) return;
+
+    const float W = (float)p->width, H = (float)p->height;
+    QuadVertex verts[6] = {
+        { 0, 0, 0, 0, 1, 1, 1, 1 }, { W, 0, 1, 0, 1, 1, 1, 1 }, { 0, H, 0, 1, 1, 1, 1, 1 },
+        { 0, H, 0, 1, 1, 1, 1, 1 }, { W, 0, 1, 0, 1, 1, 1, 1 }, { W, H, 1, 1, 1, 1, 1, 1 },
+    };
+    D3D11_MAPPED_SUBRESOURCE m = {};
+    if (FAILED(p->context->Map(p->quadVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
+    memcpy(m.pData, verts, sizeof(verts));
+    p->context->Unmap(p->quadVB, 0);
+
+    SpriteConstantBuffer cb;
+    BuildOrthoMatrix(&cb.mvp[0][0], 0.0f, W, H, 0.0f);
+    D3D11_MAPPED_SUBRESOURCE cm = {};
+    if (SUCCEEDED(p->context->Map(p->spriteCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &cm))) {
+        memcpy(cm.pData, &cb, sizeof(cb));
+        p->context->Unmap(p->spriteCB, 0);
+    }
+
+    UINT stride = sizeof(QuadVertex), offset = 0;
+    p->context->IASetVertexBuffers(0, 1, &p->quadVB, &stride, &offset);
+    p->context->IASetInputLayout(p->quadLayout);
+    p->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    p->context->VSSetShader(p->quadVS, nullptr, 0);
+    p->context->VSSetConstantBuffers(0, 1, &p->spriteCB);
+    p->context->PSSetShader(p->depthPS, nullptr, 0);
+    p->context->PSSetShaderResources(0, 1, &p->depthImgSRV);
+    // Point sampling: depth must not be blended across a wall's silhouette.
+    p->context->PSSetSamplers(0, 1, &p->sampPoint);
+    float bf[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    p->context->OMSetBlendState(p->blendNoColor, bf, 0xFFFFFFFFu);
+    p->context->OMSetDepthStencilState(p->depthImageState, 0);
+
+    p->context->Draw(6, 0);
+
+    // Back to the state the 2D path expects.
+    ID3D11ShaderResourceView* none = nullptr;
+    p->context->PSSetShaderResources(0, 1, &none);
+    p->context->PSSetShader(p->quadPS, nullptr, 0);
+    if (p->blendAlpha) p->context->OMSetBlendState(p->blendAlpha, bf, 0xFFFFFFFFu);
+    if (p->depthDisabled) p->context->OMSetDepthStencilState(p->depthDisabled, 0);
+}
+
 void MarniDX::DrawTrianglesPersp(const float* verts, int triCount, MarniHandle tex,
                                  MarniSampler sampler, MarniBlend blend,
                                  bool depthTest)
@@ -1293,6 +1474,7 @@ void MarniDX::DrawTrianglesPersp(const float* verts, int triCount, MarniHandle t
     p->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     p->context->VSSetShader(p->model3DVS, nullptr, 0);
     p->context->VSSetConstantBuffers(0, 1, &p->spriteCB);
+    if (p->fogCB) p->context->VSSetConstantBuffers(1, 1, &p->fogCB);
     p->context->PSSetShader(p->quadPS, nullptr, 0);
 
     ID3D11ShaderResourceView* srv = nullptr;

@@ -432,6 +432,9 @@ void ConfigFile_EnsureExists(void)
 }
 
 // ---------------------------------------------------------------------------
+// [Input] Gamepad (port addition): 0 = ignore every controller, keyboard only.
+int g_gamepadEnabled = 1;
+
 BOOL ConfigFile_Load(void)
 {
     // Anchor everything to the executable's own folder before looking at the
@@ -461,6 +464,8 @@ BOOL ConfigFile_Load(void)
 
     g_dwPlayCount  = (DWORD)ReadInt(path, "Player", "PlayCount", (int)g_dwPlayCount);
     g_dwClearCount = (DWORD)ReadInt(path, "Player", "ClearCount", (int)g_dwClearCount);
+
+    g_gamepadEnabled = ReadInt(path, "Input", "Gamepad", 1) != 0;
 
     char buf[128 * 2 + 1];
     if (ReadValue(path, "Input", "KeyDef", buf, sizeof(buf))) {

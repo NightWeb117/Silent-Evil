@@ -32,8 +32,11 @@
 #include "../marni/MarniDX.h"
 #include "../marni/MarniSystem.h"
 #include "../marni/Marni3DObject.h"
+#include "../system/AssetPath.h"
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 // Forward declarations for dependencies defined elsewhere
 extern unsigned int AsyncCreateTmdObject(unsigned int param1, unsigned int param2, unsigned int param3);
@@ -360,6 +363,75 @@ static void TmdComputeLight(const TmdLightState* ls, const float* n, const float
 // Above MAX_SPRITE_COMMANDS (300) on purpose: the whole queue is the ceiling on
 // how many scene depths can exist, so this bound can never actually be reached.
 #define TMD_MAX_SCENE_DEPTHS  320
+
+// ============================================================================
+// Scene depth images (mod backgrounds only - no counterpart in the original)
+//
+// A generated room (the Silent Hill crossover's) has no hand-made masks: its
+// background is rendered from real level geometry, so the generator also
+// writes that render's depth beside each RCxxxx.pak as RCxxxx.dep:
+//     "SHD2" | u16 width | u16 height
+//            | u8 fogR, fogG, fogB, fogWeight | f32 fogNear | f32 fogFar
+//            | width*height u16, top row first
+// Each u16 is view-space Z / 2 in the engine's own metric (the vz this file
+// projects with), 0xFFFF where nothing can hide a model (floor, sky, fog).
+// Written into the depth buffer before the models, it occludes them exactly
+// where the pre-rendered walls stand in front of them. The fog fields make the
+// models fade with distance into the same fog the background was rendered with.
+//
+// Looked up only in the mod overlay, so the stock rooms never pay for it.
+// ============================================================================
+static int s_depthKey = -1;
+
+static void SceneDepth_Update(MarniDX* dx)
+{
+    const char* mod = GetModOverlay();
+    if (mod == NULL || mod[0] == '\0') return;
+    const int stage = (int)g_stageId, room = (int)g_roomId, cam = (int)g_roomCameraId;
+    const int key = (stage << 16) | (room << 8) | cam;
+    if (key == s_depthKey) return;
+    s_depthKey = key;
+    dx->SetDepthImage(NULL, 0, 0);
+    dx->SetModelFog(0, 0, 0, 0, 1, 0);
+    if (stage > 4) return;   // revisit stages reuse stage 1/2 art; not generated
+
+    char path[300];
+#ifdef _WIN32
+    snprintf(path, sizeof(path), "%sstage%d\\RC%d%02X%X.dep", mod, stage + 1, stage + 1, room, cam);
+#else
+    snprintf(path, sizeof(path), "%sstage%d/RC%d%02X%X.dep", mod, stage + 1, stage + 1, room, cam);
+#endif
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) return;
+    unsigned char hdr[8];
+    std::vector<unsigned short> raw;
+    int w = 0, h = 0;
+    unsigned char fog[12];
+    if (fread(hdr, 1, 8, f) == 8 && memcmp(hdr, "SHD2", 4) == 0 &&
+        fread(fog, 1, 12, f) == 12) {
+        w = hdr[4] | (hdr[5] << 8);
+        h = hdr[6] | (hdr[7] << 8);
+        float fogNear, fogFar;
+        memcpy(&fogNear, fog + 4, 4);
+        memcpy(&fogFar, fog + 8, 4);
+        if (fog[3] != 0 && fogFar > fogNear)
+            dx->SetModelFog(fog[0] / 255.0f, fog[1] / 255.0f, fog[2] / 255.0f,
+                            fogNear, fogFar, fog[3] / 255.0f);
+        if (w > 0 && h > 0 && w <= 4096 && h <= 4096) {
+            raw.resize((size_t)w * h);
+            if (fread(raw.data(), 2, raw.size(), f) != raw.size()) raw.clear();
+        }
+    }
+    fclose(f);
+    if (raw.empty()) return;
+    std::vector<float> ndc(raw.size());
+    for (size_t i = 0; i < raw.size(); i++) {
+        if (raw[i] == 0xFFFF) { ndc[i] = 1.0f; continue; }
+        float d = ((float)raw[i] * 2.0f - TMD_NEAR_Z) * (1.0f / (TMD_FAR_Z - TMD_NEAR_Z));
+        ndc[i] = d < 0.0f ? 0.0f : (d > 1.0f ? 1.0f : d);
+    }
+    dx->SetDepthImage(ndc.data(), w, h);
+}
 
 void FlushTmdObjects(void)
 {
@@ -802,6 +874,11 @@ void FlushTmdObjects(void)
             if (ta.otDepth != tb.otDepth) return ta.otDepth > tb.otDepth;
             return a < b;
         });
+
+        // Mod backgrounds: lay the pre-rendered walls' depth down first.
+        SceneDepth_Update(Marni_DX());
+        if (Marni_DX()->HasDepthImage())
+            Marni_DX()->DrawDepthImage();
 
         static float triVerts[TMD_MAX_TRIS_FLUSH * TMD_TRI_FLOATS];
         int   triCount = 0;

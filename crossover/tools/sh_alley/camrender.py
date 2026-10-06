@@ -41,14 +41,19 @@ def textured(tri):
 
 
 def render_bg(tris_re, frm, to, fov, W=320, H=240, ss=3, fog=(0.0, 0.0, 0.0), fog_near=1500.0,
-              fog_far=26000.0, gain=1.0, near=150.0, gamma=1.0):
-    """tris_re: list of (P (3,3) RE coords, uv (3,2), sh_tri dict). Returns HxWx3 uint8."""
+              fog_far=26000.0, gain=1.0, near=150.0, gamma=1.0, with_depth=False):
+    """tris_re: list of (P (3,3) RE coords, uv (3,2), sh_tri dict). Returns HxWx3 uint8
+    (and, with_depth, the (H*ss)x(W*ss) view-space Z of the visible OCCLUDING surface -
+    inf where the visible surface is floor (tri['occ'] False) or nothing).
+
+    Fog is applied after the gamma lift, so `fog` (0..1) is the exact on-screen colour and
+    the engine can fade the models into the same colour over the same view-space range."""
     f, n, r, u = cam_basis(frm, to)
     Wb, Hb = W * ss, H * ss
     fb = fov * ss
     img = np.zeros((Hb, Wb, 3), np.float32)
-    img[:] = np.array(fog, np.float32) * 255
     zb = np.full((Hb, Wb), np.inf, np.float32)
+    ob = np.full((Hb, Wb), np.inf, np.float32)
     cache = {}
     for P, UV, tri in tris_re:
         d = P - f
@@ -73,15 +78,20 @@ def render_bg(tris_re, frm, to, fov, W=320, H=240, ss=3, fog=(0.0, 0.0, 0.0), fo
         if key not in cache:
             cache[key] = textured(tri)
         rgb, alpha = cache[key]
+        occ = tri.get('occ', True)
         for k in range(1, len(out) - 1):
-            _raster(img, zb, [out[0], out[k], out[k + 1]], fb, Wb, Hb, rgb, alpha, fog, fog_near, fog_far, gain)
-    small = img.reshape(H, ss, W, ss, 3).mean((1, 3))
+            _raster(img, zb, ob, occ, [out[0], out[k], out[k + 1]], fb, Wb, Hb, rgb, alpha)
+    col = np.clip(img * gain, 0, 255)
     if gamma != 1.0:
-        small = 255.0 * (np.clip(small, 0, 255) / 255.0) ** gamma
-    return np.clip(small, 0, 255).astype(np.uint8)
+        col = 255.0 * (col / 255.0) ** gamma
+    fogk = np.clip((zb - fog_near) / (fog_far - fog_near), 0, 1)[..., None]
+    col = col * (1 - fogk) + np.array(fog, np.float32) * 255 * fogk
+    small = col.reshape(H, ss, W, ss, 3).mean((1, 3))
+    small = np.clip(small + 0.5, 0, 255).astype(np.uint8)
+    return (small, ob) if with_depth else small
 
 
-def _raster(img, zb, tri, fb, Wb, Hb, rgb, alpha, fog, fog_near, fog_far, gain):
+def _raster(img, zb, ob, occ, tri, fb, Wb, Hb, rgb, alpha):
     V = np.array([t[0] for t in tri]); UV = np.array([t[1] for t in tri])
     sx = Wb / 2 + V[:, 0] * fb / V[:, 2]
     sy = Hb / 2 + V[:, 1] * fb / V[:, 2]
@@ -113,7 +123,6 @@ def _raster(img, zb, tri, fb, Wb, Hb, rgb, alpha, fog, fog_near, fog_far, gain):
     m &= z < sub
     if not m.any():
         return
-    fogk = np.clip((z - fog_near) / (fog_far - fog_near), 0, 1)[..., None]
-    col = col * gain * (1 - fogk) + np.array(fog, np.float32) * 255 * fogk
     sub[m] = z[m]
+    ob[y0:y1 + 1, x0:x1 + 1][m] = z[m] if occ else np.inf
     img[y0:y1 + 1, x0:x1 + 1][m] = col[m]

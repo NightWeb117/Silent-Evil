@@ -40,6 +40,19 @@ DOORS = [
     ('C', (-259.4, 229.4), (0.6, 1.6), 'B', (-259.6, 230.4), 'south', 1),
 ]
 START_ROOM = 'A'
+
+# Atmosphere, following Silent Hill's own progression through this alley: the
+# daytime fog preset at the entrance (MAP_EFFECTS_INFOS[1]: fog colour 108,100,116,
+# world light 1.1), darkening as "the alley gets darker" (map0_s00 switches to the
+# black-fog preset 6, world light 0.44). Fog distances in metres; colours 0..255 as
+# they appear on screen. The same values go into the .dep files so the engine fades
+# the characters into the same fog.
+ATMOS = {
+    'A': dict(fog=(108, 100, 116), near=1.5, far=11.0, gain=1.25),
+    'B': dict(fog=(66, 61, 72), near=1.5, far=10.5, gain=1.05),
+    'C': dict(fog=(24, 22, 28), near=1.0, far=9.0, gain=0.85),
+}
+DEPTH_BIAS = 25.0          # RE units: walls sit this much farther in the depth image
 FIRST_ENTRY_FLAG = (1, 0xFF)   # bank 1 (scenario flags 2), last bit: "alley start done"
 
 # ----------------------------------------------------------------- helpers
@@ -53,8 +66,30 @@ def room_frame(rect):
     return Frame((x1 * M, 0, z1 * M), (1000.0, 0, 1000.0))
 
 
+def is_floor(P):
+    """Same floor test as walk.walk_grid: near-horizontal and at ground height. Floors
+    never hide a character standing on them, so they stay out of the depth image."""
+    nrm = np.cross(P[1] - P[0], P[2] - P[0]); nn = np.linalg.norm(nrm)
+    if nn == 0:
+        return True
+    return abs(nrm[1] / nn) > 0.85 and P[:, 1].max() > -0.6 * 256 and P[:, 1].min() < 0.4 * 256
+
+
 def load_world():
-    return chunk_tris(os.path.join(BG, 'THRF905.IPD')) + chunk_tris(os.path.join(BG, 'THRF906.IPD'))
+    tris = chunk_tris(os.path.join(BG, 'THRF905.IPD')) + chunk_tris(os.path.join(BG, 'THRF906.IPD'))
+    for t in tris:
+        t['occ'] = not is_floor(t['P'])
+    return tris
+
+
+def depth_file(ob, atm):
+    """SHD2 depth image for the engine (see TmdRenderer.cpp SceneDepth_Update)."""
+    H, W = ob.shape
+    v = np.where(np.isfinite(ob), np.minimum((ob + DEPTH_BIAS) / 2.0, 65534), 65535).astype('<u2')
+    re_m = S * M
+    hdr = b'SHD2' + struct.pack('<HH', W, H) + bytes(atm['fog']) + bytes([255]) + \
+        struct.pack('<ff', atm['near'] * re_m, atm['far'] * re_m)
+    return hdr + v.tobytes()
 
 
 def rects_from_mask(mask):
@@ -108,10 +143,15 @@ def build_room(key, world, grid, reach, out_dir, template, log=print):
 
     # --- backgrounds (+ depth for visibility tests)
     for ci, c in enumerate(cams):
-        rgb = render_bg(tris_re, c['frm'], c['to'], c['fov'], gain=1.25, gamma=0.62, fog_near=3000, fog_far=45000)
+        atm = ATMOS[key]
+        re_m = S * M
+        rgb, ob = render_bg(tris_re, c['frm'], c['to'], c['fov'], gain=atm['gain'], gamma=0.62,
+                            fog=tuple(x / 255.0 for x in atm['fog']),
+                            fog_near=atm['near'] * re_m, fog_far=atm['far'] * re_m, with_depth=True)
         c['rgb'] = rgb
         pak = lzw_pack(make_tim(rgb))
         open(os.path.join(out_dir, 'RC1%02X%X.pak' % (R['id'], ci)), 'wb').write(pak)
+        open(os.path.join(out_dir, 'RC1%02X%X.dep' % (R['id'], ci)), 'wb').write(depth_file(ob, atm))
     log('  %s: %d backgrounds' % (key, len(cams)))
 
     # --- room cell window
