@@ -455,14 +455,14 @@ static void SceneDepth_Update(MarniDX* dx)
         ndc[i] = d < 0.0f ? 0.0f : (d > 1.0f ? 1.0f : d);
     }
     unsigned short lo = 0xFFFF, hi = 0;
-    size_t far = 0;
+    size_t openPx = 0;
     for (unsigned short r : raw) {
-        if (r == 0xFFFF) { far++; continue; }
+        if (r == 0xFFFF) { openPx++; continue; }
         if (r < lo) lo = r;
         if (r > hi) hi = r;
     }
     ModLog("[depth] %dx%d  wall z %u..%u  open %.0f%%\n", w, h, lo * 2u, hi * 2u,
-           100.0 * far / raw.size());
+           100.0 * openPx / raw.size());
     s_depthNdc = ndc;
     s_depthW = w; s_depthH = h;
     s_depthLogFrames = 4;
