@@ -1248,6 +1248,31 @@ void door_system_load_data(void)
 // Spawn the door animation task (FUN_00444770). The caller then Task_sleep(1)
 // and proceeds with the room load; the anim runs concurrently and
 // room_transition_load waits for bit 0x4000000 to clear.
+// ============================================================================
+// QuickDoorTask - crossover only (no counterpart in the original). Silent Hill
+// has no door-opening sequence: an area change is a short cut to black. A door
+// record whose type byte (+0x08) is 0xFE, in a mod-overlay room, runs this in
+// place of the .dor animation: it holds the same MSF_ROOM_TRANSITION handshake
+// room_transition_load waits on, blacks a few frames while the room loads,
+// then restores what DoorAnimTeardown restores.
+// ============================================================================
+static void QuickDoorTask(void)
+{
+    g_bGameActive = 0;
+    g_main_state_flags |= MSF_ROOM_TRANSITION;
+    for (int i = 0; i < 6; i++) {
+        g_rect.textureId = 0;
+        g_rect.r = g_rect.g = g_rect.b = 0;
+        g_rect.x = -160; g_rect.y = -120; g_rect.w = 320; g_rect.h = 240;
+        draw_rect(&g_rect, 0, 0);
+        Task_sleep(1);
+    }
+    g_fading_state = (short)0xFFFF;
+    g_bGameActive = 2;
+    g_main_state_flags &= ~MSF_ROOM_TRANSITION;
+    Task_exit();
+}
+
 void door_system_start_animation(void)
 {
     crashlog_mark("door: door_system_start_animation");
@@ -1448,7 +1473,9 @@ void room_transition_load(void)
     }
 
     load_room_sfx(g_nextRoomSfxId);
-    door_system_load_data();            // FUN_00412300 - load the .dor + start the texture page
+    const bool quickDoor = (g_nextRoomDoorType == 0xFE && GetModOverlay()[0] != '\0');
+    if (!quickDoor)
+        door_system_load_data();        // FUN_00412300 - load the .dor + start the texture page
 
     // The original does:
     //     Task_execute(1, FUN_00444770);   // spawns the door-animation task
@@ -1459,7 +1486,12 @@ void room_transition_load(void)
     // bit 0x4000000 on init, animates the door (black rect, camera dolly, door
     // panels through the TMD queue) while this task loads the destination room,
     // and clears the bit on teardown. The wait loop below polls that bit.
-    door_system_start_animation();
+    if (quickDoor) {
+        crashlog_mark("door: quick (crossover) transition");
+        Task_execute(1, (void*)QuickDoorTask);
+    } else {
+        door_system_start_animation();
+    }
     Task_sleep(1);
 
     // 0x0048148c: place the player at the destination's entry point.

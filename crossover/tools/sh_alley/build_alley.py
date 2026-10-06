@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from shmap import chunk_tris, BG
 from walk import walk_grid, CELL
 from camrender import Frame, S, render_bg, cam_basis
+from autocam import plan_cameras
 from bss_to_pak import make_tim, lzw_pack
 
 M = 256.0  # SH units per metre
@@ -48,9 +49,9 @@ START_ROOM = 'A'
 # they appear on screen. The same values go into the .dep files so the engine fades
 # the characters into the same fog.
 ATMOS = {
-    'A': dict(fog=(108, 100, 116), near=1.5, far=11.0, gain=1.25),
-    'B': dict(fog=(66, 61, 72), near=1.5, far=10.5, gain=1.05),
-    'C': dict(fog=(24, 22, 28), near=1.0, far=9.0, gain=0.85),
+    'A': dict(fog=(108, 100, 116), near=1.5, far=11.0, gain=1.25, amb=0x780, light=230),
+    'B': dict(fog=(66, 61, 72), near=1.5, far=10.5, gain=1.05, amb=0x640, light=200),
+    'C': dict(fog=(24, 22, 28), near=1.0, far=9.0, gain=0.85, amb=0x500, light=170),
 }
 DEPTH_BIAS = 25.0          # RE units: walls sit this much farther in the depth image
 FIRST_ENTRY_FLAG = (1, 0xFF)   # bank 1 (scenario flags 2), last bit: "alley start done"
@@ -132,16 +133,38 @@ class Grid:
 
 
 # ----------------------------------------------------------------- per-room build
-def build_room(key, world, grid, reach, out_dir, template, log=print):
+def plan_room(key, world, grid, reach, log=print):
+    """Walkable cells of this room and an automatic camera set covering them."""
     R = ROOMS[key]
     fr = room_frame(R['rect'])
     x0, x1, z0, z1 = R['rect']
     tris_re = [(fr.to_re(t['P']), t['uv'], t) for t in world]
-    cams = []
-    for (frm, to, fov) in R['cams']:
-        cams.append(dict(frm=fr.to_re(np.array(frm) * M), to=fr.to_re(np.array(to) * M), fov=fov))
+    iz0, ix0 = grid.idx(x0, z0); iz1, ix1 = grid.idx(x1, z1)
+    win = (slice(iz0, iz1 + 1), slice(ix0, ix1 + 1))
+    walk = reach[win] & ndimage.binary_erosion(grid.free, iterations=2)[win]
+    if walk.sum() < 50:
+        walk = reach[win]
+    cells = np.argwhere(walk)
+    cells_sh = np.array([grid.cell_center(iz0 + r, ix0 + c) for r, c in cells])
+    log('  %s: planning cameras over %d cells' % (key, len(cells)))
+    cams, Q = plan_cameras(fr, tris_re, grid, cells_sh, log=log)
+    return dict(fr=fr, tris_re=tris_re, win=win, walk=walk, cells=cells, cells_sh=cells_sh, cams=cams, Q=Q,
+                iz0=iz0, ix0=ix0)
 
-    # --- backgrounds (+ depth for visibility tests)
+
+def cam_at(plan, xm, zm):
+    d = ((plan['cells_sh'] - np.array([xm, zm])) ** 2).sum(1)
+    return int(plan['Q'][int(d.argmin())].argmax())
+
+
+def build_room(key, plan, plans, grid, reach, out_dir, template, log=print):
+    R = ROOMS[key]
+    fr = plan['fr']
+    tris_re = plan['tris_re']
+    cams = plan['cams']
+    win, walk, iz0, ix0 = plan['win'], plan['walk'], plan['iz0'], plan['ix0']
+
+    # --- backgrounds (+ depth images for the engine's occlusion)
     for ci, c in enumerate(cams):
         atm = ATMOS[key]
         re_m = S * M
@@ -153,13 +176,6 @@ def build_room(key, world, grid, reach, out_dir, template, log=print):
         open(os.path.join(out_dir, 'RC1%02X%X.pak' % (R['id'], ci)), 'wb').write(pak)
         open(os.path.join(out_dir, 'RC1%02X%X.dep' % (R['id'], ci)), 'wb').write(depth_file(ob, atm))
     log('  %s: %d backgrounds' % (key, len(cams)))
-
-    # --- room cell window
-    iz0, ix0 = grid.idx(x0, z0); iz1, ix1 = grid.idx(x1, z1)
-    win = (slice(iz0, iz1 + 1), slice(ix0, ix1 + 1))
-    walk = reach[win] & ndimage.binary_erosion(grid.free, iterations=2)[win]
-    if walk.sum() < 50:
-        walk = reach[win]
     free = grid.free[win]
 
     # --- collision: blocked cells near the walkable path, plus a closed border
@@ -182,38 +198,8 @@ def build_room(key, world, grid, reach, out_dir, template, log=print):
     log('  %s: %d collision boxes' % (key, len(boxes)))
 
     # --- camera regions: each walkable cell -> best camera that sees the player there
-    cells = np.argwhere(walk)
-    pts = []
-    for (r, c) in cells:
-        xm, zm = grid.cell_center(iz0 + r, ix0 + c)
-        pts.append(fr.to_re(np.array([xm * M, -0.9 * M, zm * M])))
-    pts = np.array(pts)
-    scores = np.full((len(pts), len(cams)), -1e9)
-    for ci, c in enumerate(cams):
-        f, n, rr, uu = cam_basis(c['frm'], c['to'])
-        d = pts - f; z = d @ n
-        sx = 160 + (d @ rr) * c['fov'] / np.maximum(z, 1); sy = 120 + (d @ uu) * c['fov'] / np.maximum(z, 1)
-        inview = (z > 1200) & (sx > 24) & (sx < 296) & (sy > 30) & (sy < 225)
-        # occlusion: walk the segment camera -> point through the free grid
-        vis = np.zeros(len(pts), bool)
-        cam_sh = fr.to_sh(c['frm']) / M
-        for i in np.where(inview)[0]:
-            psh = fr.to_sh(pts[i]) / M
-            ok = True
-            for t in np.linspace(0.08, 0.92, 24):
-                q = cam_sh + (psh - cam_sh) * t
-                iz, ix = grid.idx(q[0], q[2])
-                if q[1] > -2.2 and not grid.free[iz, ix]:   # below wall-top height and inside a wall
-                    ok = False; break
-            vis[i] = ok
-        centred = 1 - np.abs(sx - 160) / 160
-        scores[:, ci] = np.where(vis, centred * 2 - z / 20000.0, -1e9)
-    best = scores.argmax(1)
-    none = scores.max(1) < -1e8
-    if none.any():
-        cam_xz = np.array([[c['frm'][0], c['frm'][2]] for c in cams])
-        dd = ((pts[none][:, None, [0, 2]] - cam_xz[None]) ** 2).sum(-1)
-        best[none] = dd.argmin(1)
+    cells = plan['cells']
+    best = plan['Q'].argmax(1)
     assign = np.full(walk.shape, -1, int)
     assign[cells[:, 0], cells[:, 1]] = best
     # majority filter so zones are not speckled
@@ -249,14 +235,15 @@ def build_room(key, world, grid, reach, out_dir, template, log=print):
         b = fr.to_re(np.array([(dx + w / 2) * M, 0, (dz + dd / 2) * M]))
         sp = dst_fr.to_re(np.array([sx_ * M, 0, sz_ * M]))
         door_recs.append(dict(x=int(min(a[0], b[0])), z=int(min(a[2], b[2])), w=int(abs(a[0] - b[0])), d=int(abs(a[2] - b[2])),
-                              dest=ROOMS[dst]['id'], cam=cam, sx=int(sp[0]), sz=int(sp[2]), dir=FACING[facing]))
+                              dest=ROOMS[dst]['id'], cam=cam_at(plans[dst], sx_, sz_), sx=int(sp[0]), sz=int(sp[2]),
+                              dir=FACING[facing]))
     start = None
     if 'start' in R:
         (sx_, sz_), facing = R['start']
         sp = fr.to_re(np.array([sx_ * M, 0, sz_ * M]))
         start = (int(sp[0]), int(sp[2]), FACING[facing])
 
-    rdt = write_rdt(template, cams, zones, boxes, door_recs, start, walk_bounds(fr, R['rect']))
+    rdt = write_rdt(template, cams, zones, boxes, door_recs, start, walk_bounds(fr, R['rect']), ATMOS[key])
     for v in (0, 1):   # Chris / Jill scenario files
         open(os.path.join(out_dir, 'ROOM1%02X%d.RDT' % (R['id'], v)), 'wb').write(rdt)
     return dict(cams=cams, boxes=boxes, zones=zones, doors=door_recs, frame=fr, start=start)
@@ -269,7 +256,7 @@ def walk_bounds(fr, rect):
 
 
 # ----------------------------------------------------------------- RDT writer
-def write_rdt(template, cams, zones, boxes, doors, start, bounds):
+def write_rdt(template, cams, zones, boxes, doors, start, bounds, atm=None):
     d = bytearray(template)
     ncam_t = d[1]
     assert len(cams) <= ncam_t, 'template has too few camera slots'
@@ -287,11 +274,13 @@ def write_rdt(template, cams, zones, boxes, doors, start, bounds):
     # header counts: no sprites, no omodels, no items
     d[0] = 0; d[1] = len(cams); d[2] = 0; d[3] = 0
     # ambient + lights: dim, cold, one soft directional key light
-    struct.pack_into('<3h', d, 6, 0x380, 0x390, 0x3A0)
+    amb = atm['amb'] if atm else 0x380
+    key = atm['light'] if atm else 150
+    struct.pack_into('<3h', d, 6, amb, amb + 0x10, amb + 0x28)
     for i in range(3):
         o = 0x0C + i * 0x14
         if i == 0:
-            struct.pack_into('<3i4BHh', d, o, 0, -6000, 0, 150, 150, 158, 0, 1, 0)
+            struct.pack_into('<3i4BHh', d, o, 0, -6000, 0, key, key, min(255, key + 8), 0, 1, 0)
         else:
             struct.pack_into('<3i4BHh', d, o, 0, 0, 0, 0, 0, 0, 0, 1, 0)
 
@@ -340,7 +329,8 @@ def write_rdt(template, cams, zones, boxes, doors, start, bounds):
     for slot, dr in enumerate(doors):
         # +0x17 probe flags: 0x41 = fires when the player WALKS into the box (own position),
         # no action button - the alley has no visible doors
-        rec = struct.pack('<4H6B4H2B', dr['x'], dr['z'], dr['w'], dr['d'], 0x06, 0x00, 0x04, dr['cam'], 0x00,
+        # +0x08 = 0xFE: the crossover's quick cut (no RE door animation); +0x0B bit 0x40: no door sound
+        rec = struct.pack('<4H6B4H2B', dr['x'], dr['z'], dr['w'], dr['d'], 0xFE, 0x00, 0x04, dr['cam'] | 0x40, 0x00,
                           dr['dest'], dr['sx'], 0, dr['sz'], dr['dir'], 0x00, 0x41)
         assert len(rec) == 24
         ops += bytes([0x0C, slot]) + rec
@@ -376,9 +366,11 @@ def main(re_region, out_root, preview=None):
     grid.reach = reach
     st = os.path.join(out_root, 'stage1'); os.makedirs(st, exist_ok=True)
     template = open(os.path.join(re_region, 'Stage1', 'ROOM1060.RDT'), 'rb').read()
+    grid.reach_near = reach
+    plans = {key: plan_room(key, world, grid, reach) for key in ROOMS}
     info = {}
     for key in ROOMS:
-        info[key] = build_room(key, world, grid, reach, st, template)
+        info[key] = build_room(key, plans[key], plans, grid, reach, st, template)
     os.makedirs(os.path.join(out_root, 'data'), exist_ok=True)
     write_bio_card(os.path.join(re_region, 'Data', 'bio_card.dat'), os.path.join(out_root, 'data', 'bio_card.dat'),
                    ROOMS[START_ROOM]['id'])

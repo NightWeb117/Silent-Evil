@@ -88,6 +88,8 @@ def render_bg(tris_re, frm, to, fov, W=320, H=240, ss=3, fog=(0.0, 0.0, 0.0), fo
     col = col * (1 - fogk) + np.array(fog, np.float32) * 255 * fogk
     small = col.reshape(H, ss, W, ss, 3).mean((1, 3))
     small = np.clip(small + 0.5, 0, 255).astype(np.uint8)
+    if with_depth == 2:
+        return small, ob, zb
     return (small, ob) if with_depth else small
 
 
