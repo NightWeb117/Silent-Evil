@@ -33,6 +33,7 @@
 #include "../marni/MarniSystem.h"
 #include "../marni/Marni3DObject.h"
 #include "../system/AssetPath.h"
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -382,6 +383,25 @@ static void TmdComputeLight(const TmdLightState* ls, const float* n, const float
 // Looked up only in the mod overlay, so the stock rooms never pay for it.
 // ============================================================================
 static int s_depthKey = -1;
+extern int g_modOcclusion, g_modFog;
+
+// Diagnostics for the generated rooms: crossover.log beside the executable.
+static std::vector<float> s_depthNdc;     // CPU copy of the loaded image
+static int s_depthW = 0, s_depthH = 0;
+static int s_depthLogFrames = 0;
+
+static void ModLog(const char* fmt, ...)
+{
+    static bool fresh = true;
+    FILE* f = fopen("crossover.log", fresh ? "w" : "a");
+    fresh = false;
+    if (!f) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fclose(f);
+}
 
 static void SceneDepth_Update(MarniDX* dx)
 {
@@ -393,6 +413,8 @@ static void SceneDepth_Update(MarniDX* dx)
     s_depthKey = key;
     dx->SetDepthImage(NULL, 0, 0);
     dx->SetModelFog(0, 0, 0, 0, 1, 0);
+    s_depthNdc.clear();
+    s_depthW = s_depthH = 0;
     if (stage > 4) return;   // revisit stages reuse stage 1/2 art; not generated
 
     char path[300];
@@ -414,7 +436,9 @@ static void SceneDepth_Update(MarniDX* dx)
         float fogNear, fogFar;
         memcpy(&fogNear, fog + 4, 4);
         memcpy(&fogFar, fog + 8, 4);
-        if (fog[3] != 0 && fogFar > fogNear)
+        ModLog("[room] %s: fog %d,%d,%d w%d near %.0f far %.0f (ModelFog=%d Occlusion=%d)\n",
+               path, fog[0], fog[1], fog[2], fog[3], fogNear, fogFar, g_modFog, g_modOcclusion);
+        if (g_modFog && fog[3] != 0 && fogFar > fogNear)
             dx->SetModelFog(fog[0] / 255.0f, fog[1] / 255.0f, fog[2] / 255.0f,
                             fogNear, fogFar, fog[3] / 255.0f);
         if (w > 0 && h > 0 && w <= 4096 && h <= 4096) {
@@ -430,7 +454,20 @@ static void SceneDepth_Update(MarniDX* dx)
         float d = ((float)raw[i] * 2.0f - TMD_NEAR_Z) * (1.0f / (TMD_FAR_Z - TMD_NEAR_Z));
         ndc[i] = d < 0.0f ? 0.0f : (d > 1.0f ? 1.0f : d);
     }
-    dx->SetDepthImage(ndc.data(), w, h);
+    unsigned short lo = 0xFFFF, hi = 0;
+    size_t far = 0;
+    for (unsigned short r : raw) {
+        if (r == 0xFFFF) { far++; continue; }
+        if (r < lo) lo = r;
+        if (r > hi) hi = r;
+    }
+    ModLog("[depth] %dx%d  wall z %u..%u  open %.0f%%\n", w, h, lo * 2u, hi * 2u,
+           100.0 * far / raw.size());
+    s_depthNdc = ndc;
+    s_depthW = w; s_depthH = h;
+    s_depthLogFrames = 4;
+    if (g_modOcclusion)
+        dx->SetDepthImage(ndc.data(), w, h);
 }
 
 void FlushTmdObjects(void)
@@ -877,6 +914,31 @@ void FlushTmdObjects(void)
 
         // Mod backgrounds: lay the pre-rendered walls' depth down first.
         SceneDepth_Update(Marni_DX());
+        if (s_depthLogFrames > 0 && collected > 0) {
+            s_depthLogFrames--;
+            float lo = 1e30f, hi = -1e30f, cx = 0, cy = 0;
+            for (int k = 0; k < collected; k++) {
+                const TmdTri& t = g_tmdTris[k];
+                for (int c = 0; c < 3; c++) {
+                    float vz = t.v[c * TMD_VERT_FLOATS + 3];
+                    if (vz < lo) lo = vz;
+                    if (vz > hi) hi = vz;
+                    cx += t.v[c * TMD_VERT_FLOATS + 0];
+                    cy += t.v[c * TMD_VERT_FLOATS + 1];
+                }
+            }
+            cx /= collected * 3.0f; cy /= collected * 3.0f;
+            float gx = cx / scaleX, gy = cy / scaleY;   // game space 320x240
+            float img = -1.0f;
+            if (!s_depthNdc.empty()) {
+                int ix = (int)(gx / 320.0f * s_depthW), iy = (int)(gy / 240.0f * s_depthH);
+                if (ix >= 0 && iy >= 0 && ix < s_depthW && iy < s_depthH)
+                    img = s_depthNdc[(size_t)iy * s_depthW + ix] * (TMD_FAR_Z - TMD_NEAR_Z) + TMD_NEAR_Z;
+            }
+            ModLog("[models] cam %d: %d tris  vz %.0f..%.0f  centre (%.0f,%.0f)  ndc %.4f  wall z there %.0f\n",
+                   (int)g_roomCameraId, collected, lo, hi, gx, gy,
+                   g_tmdTris[0].v[2], img);
+        }
         if (Marni_DX()->HasDepthImage())
             Marni_DX()->DrawDepthImage();
 

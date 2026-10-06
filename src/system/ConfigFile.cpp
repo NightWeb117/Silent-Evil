@@ -434,6 +434,8 @@ void ConfigFile_EnsureExists(void)
 // ---------------------------------------------------------------------------
 // [Input] Gamepad (port addition): 0 = ignore every controller, keyboard only.
 int g_gamepadEnabled = 1;
+int g_modOcclusion = 1;   // [Crossover] Occlusion
+int g_modFog = 1;         // [Crossover] ModelFog
 
 BOOL ConfigFile_Load(void)
 {
@@ -466,6 +468,8 @@ BOOL ConfigFile_Load(void)
     g_dwClearCount = (DWORD)ReadInt(path, "Player", "ClearCount", (int)g_dwClearCount);
 
     g_gamepadEnabled = ReadInt(path, "Input", "Gamepad", 1) != 0;
+    g_modOcclusion   = ReadInt(path, "Crossover", "Occlusion", 1) != 0;
+    g_modFog         = ReadInt(path, "Crossover", "ModelFog", 1) != 0;
 
     char buf[128 * 2 + 1];
     if (ReadValue(path, "Input", "KeyDef", buf, sizeof(buf))) {
