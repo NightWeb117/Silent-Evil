@@ -28,6 +28,28 @@
 // so a pad that enumerates on both APIs is not polled twice.
 static bool s_xinputOwnsSlot0 = false;
 
+// Port fix, WinMM axis ranges:
+// The original assumed every joystick reports 0..0xFFFF with the centre at
+// 0x8000 and tested the raw dwXpos/dwYpos against 0x3000/0xC000. Plenty of
+// devices report another range (0..1023, 0..255 ...) or expose a "Y" axis
+// that is really a pedal, throttle or slider resting at one end. Either way
+// the resting value fell below 0x3000 and the game saw UP (and/or LEFT) held
+// forever - the player walked forward on their own. Each axis is now scaled
+// from the range joyGetDevCaps reports, and an axis that is not centred when
+// the device is enumerated is ignored, since no real stick rests deflected.
+static DWORD s_axisMin[2][MAX_JOYSTICKS];
+static DWORD s_axisMax[2][MAX_JOYSTICKS];
+static bool  s_axisUsable[2][MAX_JOYSTICKS];
+
+static DWORD NormalizeAxis(int axis, int joy, DWORD raw)
+{
+    DWORD lo = s_axisMin[axis][joy], hi = s_axisMax[axis][joy];
+    if (hi <= lo) return 0x8000;
+    if (raw <= lo) return 0;
+    if (raw >= hi) return 0xFFFF;
+    return (DWORD)(((unsigned long long)(raw - lo) * 0xFFFFull) / (hi - lo));
+}
+
 // ============================================================================
 // UpdateKeyboardInputState (0x004202f0)
 // Reads 32 virtual key codes from keyMap, calls GetAsyncKeyState for each,
@@ -186,12 +208,19 @@ void CMarniDirectInput::UpdateAllInputStates(MasterInputState* pState)
         DWORD dirFlags = 0;
 
         // X axis: joystick right (>0xC000) or left (<0x3000)
-        if (pJoy->info.dwXpos > 0xC000) dirFlags |= 8;   // RIGHT bit
-        if (pJoy->info.dwXpos < 0x3000) dirFlags |= 4;   // LEFT bit
+        // (scaled to 0..0xFFFF from the device's own range - see NormalizeAxis)
+        if (s_axisUsable[0][i]) {
+            DWORD x = NormalizeAxis(0, i, pJoy->info.dwXpos);
+            if (x > 0xC000) dirFlags |= 8;   // RIGHT bit
+            if (x < 0x3000) dirFlags |= 4;   // LEFT bit
+        }
 
         // Y axis: joystick down (>0xC000) or up (<0x3000)
-        if (pJoy->info.dwYpos > 0xC000) dirFlags |= 2;   // DOWN bit
-        if (pJoy->info.dwYpos < 0x3000) dirFlags |= 1;   // UP bit
+        if (s_axisUsable[1][i]) {
+            DWORD y = NormalizeAxis(1, i, pJoy->info.dwYpos);
+            if (y > 0xC000) dirFlags |= 2;   // DOWN bit
+            if (y < 0x3000) dirFlags |= 1;   // UP bit
+        }
 
         // 0x00420659-0x004206d5: POV hat to directional mapping
         // The POV hat is divided into 8 cardinal/diagonal zones:
@@ -312,6 +341,25 @@ void CMarniDirectInput::InitJoysticks(MasterInputState* pState)
         if (result == 6 || result == JOYERR_PARMS || result == JOYERR_UNPLUGGED) {
             pJoy->enabled = 0;
             continue;
+        }
+
+        // Port fix: record the axis ranges and drop axes that rest deflected.
+        s_axisMin[0][i] = joyCaps.wXmin;
+        s_axisMax[0][i] = joyCaps.wXmax;
+        s_axisMin[1][i] = joyCaps.wYmin;
+        s_axisMax[1][i] = joyCaps.wYmax;
+        if (s_axisMax[0][i] <= s_axisMin[0][i]) { s_axisMin[0][i] = 0; s_axisMax[0][i] = 0xFFFF; }
+        if (s_axisMax[1][i] <= s_axisMin[1][i]) { s_axisMin[1][i] = 0; s_axisMax[1][i] = 0xFFFF; }
+        {
+            DWORD x = NormalizeAxis(0, i, pJoy->info.dwXpos);
+            DWORD y = NormalizeAxis(1, i, pJoy->info.dwYpos);
+            s_axisUsable[0][i] = (pJoy->info.dwFlags & JOY_RETURNX) && x >= 0x3000 && x <= 0xC000;
+            s_axisUsable[1][i] = (pJoy->info.dwFlags & JOY_RETURNY) && y >= 0x3000 && y <= 0xC000;
+            if (!s_axisUsable[0][i] || !s_axisUsable[1][i]) {
+                printf("Joy[%d] axis ignored (not centred at start): X=%s Y=%s [%s]\n", i,
+                       s_axisUsable[0][i] ? "ok" : "off", s_axisUsable[1][i] ? "ok" : "off",
+                       "MarniSystem DirectInput Class");
+            }
         }
 
         // 0x0042081a-0x0042085a: Print joystick identification info
