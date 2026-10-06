@@ -1,8 +1,7 @@
 name: Release
 
+# Upstream release-please pipeline; manual only in this fork (see crossover-build.yml).
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
