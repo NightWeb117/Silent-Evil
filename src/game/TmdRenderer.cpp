@@ -383,6 +383,7 @@ static void TmdComputeLight(const TmdLightState* ls, const float* n, const float
 // Looked up only in the mod overlay, so the stock rooms never pay for it.
 // ============================================================================
 static int s_depthKey = -1;
+unsigned int g_modFrame = 0;   // crossover: frames rendered (quick-door re-entry guard)
 extern int g_modOcclusion, g_modFog;
 
 // Diagnostics for the generated rooms: crossover.log beside the executable.
@@ -478,6 +479,7 @@ static void SceneDepth_Update(MarniDX* dx)
 
 void FlushTmdObjects(void)
 {
+    g_modFrame++;
     int queued = g_tmdQueueCount;
 
     unsigned int maskDepths[TMD_MAX_SCENE_DEPTHS];

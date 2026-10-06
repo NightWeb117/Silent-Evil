@@ -407,6 +407,17 @@ LAB_00480e89:
             // Death state machine (0x00480ff4)
             // ====================================================================
             if ((g_main_state_flags & MSF_PLAYER_DEAD) != 0) {
+                extern int g_modEndRequested;
+                if (g_modEndRequested && DAT_00be9614 == 0) {
+                    // Crossover end-of-area trigger: straight to the fade.
+                    BuildSndFadeTbl((char)0xFD, 0x2B);
+                    TimeoutDeathFadeOut();
+                    DAT_00be9614 = 3;
+                }
+                if (g_modEndRequested) {
+                    sprintf(PRINT_TEXT_BUFFER, "TO BE CONTINUED");
+                    PrintText8x14(0x64, 0x70, 1, 0);
+                }
                 switch (DAT_00be9614) {
                 case 0:
                     // 0x00480ff4-0x004810c5: Death trigger - check room-specific behavior

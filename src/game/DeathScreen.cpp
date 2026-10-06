@@ -445,9 +445,11 @@ void die_state(void)
     g_main_state_flags      = (g_main_state_flags & ~(MSF_SCREEN_MODE_MASK | MSF_INTENSITY_RAMP)) | MSF_SCREEN_STANDALONE;
 
     // Skip the death screen entirely in attract/demo mode (0x90000000).
-    if ((g_main_state_flags2 & (MSF2_DEATH_VARIANT | MSF2_ATTRACT_DEMO)) == 0) {
+    extern int g_modEndRequested;
+    if ((g_main_state_flags2 & (MSF2_DEATH_VARIANT | MSF2_ATTRACT_DEMO)) == 0 && !g_modEndRequested) {
         display_die_screen();
     }
+    g_modEndRequested = 0;
 
     StMask(0, 1);
     Task_sleep(1);

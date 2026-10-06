@@ -460,24 +460,37 @@ bool ConvertHarry(const SilentHillDisc& sh, const Bytes& reEmd, Bytes& out, std:
                 V3 fn = cross(b - a, c - a);
                 V3 an = N[t[0]] + N[t[1]] + N[t[2]];
                 if (dot(fn, an) > 0) std::swap(t[1], t[2]);   // RE: cross(v1-v0,v2-v0) opposes the normal
-                int vi[3], ni[3];
-                for (int c2 = 0; c2 < 3; c2++) { vi[c2] = vid(P[t[c2]] - nw[k]); ni[c2] = nid(N[t[c2]]); }
-                uint16_t cba = page[pi] == 0 ? 0x7800 : 0x7840;
-                uint16_t tsb = (uint16_t)(0x80 | page[pi]);
-                uint8_t hdr[4] = {9, 6, 0, 0x34};
-                put(o.prim, hdr, 4);
-                uint8_t uv0[2] = {(uint8_t)uvp[pi][t[0]][0], (uint8_t)uvp[pi][t[0]][1]};
-                uint8_t uv1[2] = {(uint8_t)uvp[pi][t[1]][0], (uint8_t)uvp[pi][t[1]][1]};
-                uint8_t uv2[2] = {(uint8_t)uvp[pi][t[2]][0], (uint8_t)uvp[pi][t[2]][1]};
-                uint16_t pad = 0;
-                put(o.prim, uv0, 2); put(o.prim, &cba, 2);
-                put(o.prim, uv1, 2); put(o.prim, &tsb, 2);
-                put(o.prim, uv2, 2); put(o.prim, &pad, 2);
-                for (int c2 = 0; c2 < 3; c2++) {
-                    uint16_t nn = (uint16_t)ni[c2], vv = (uint16_t)vi[c2];
-                    put(o.prim, &nn, 2); put(o.prim, &vv, 2);
+                // Each triangle goes out twice, once per winding (the copy with
+                // negated normals). RE culls back faces by screen winding, and
+                // Silent Hill's thin parts - collar, jacket hem, hair - carry
+                // vertex normals that do not reliably say which side is out, so
+                // a single winding left holes you could see through.
+                for (int side = 0; side < 2; side++) {
+                    int tt[3] = {t[0], side ? t[2] : t[1], side ? t[1] : t[2]};
+                    int vi[3], ni[3];
+                    for (int c2 = 0; c2 < 3; c2++) {
+                        vi[c2] = vid(P[tt[c2]] - nw[k]);
+                        V3 nn3 = N[tt[c2]];
+                        if (side) nn3 = V3{-nn3[0], -nn3[1], -nn3[2]};
+                        ni[c2] = nid(nn3);
+                    }
+                    uint16_t cba = page[pi] == 0 ? 0x7800 : 0x7840;
+                    uint16_t tsb = (uint16_t)(0x80 | page[pi]);
+                    uint8_t hdr[4] = {9, 6, 0, 0x34};
+                    put(o.prim, hdr, 4);
+                    uint8_t uv0[2] = {(uint8_t)uvp[pi][tt[0]][0], (uint8_t)uvp[pi][tt[0]][1]};
+                    uint8_t uv1[2] = {(uint8_t)uvp[pi][tt[1]][0], (uint8_t)uvp[pi][tt[1]][1]};
+                    uint8_t uv2[2] = {(uint8_t)uvp[pi][tt[2]][0], (uint8_t)uvp[pi][tt[2]][1]};
+                    uint16_t pad = 0;
+                    put(o.prim, uv0, 2); put(o.prim, &cba, 2);
+                    put(o.prim, uv1, 2); put(o.prim, &tsb, 2);
+                    put(o.prim, uv2, 2); put(o.prim, &pad, 2);
+                    for (int c2 = 0; c2 < 3; c2++) {
+                        uint16_t nn = (uint16_t)ni[c2], vv = (uint16_t)vi[c2];
+                        put(o.prim, &nn, 2); put(o.prim, &vv, 2);
+                    }
+                    o.nprim++;
                 }
-                o.nprim++;
             }
         }
 

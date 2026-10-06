@@ -6734,6 +6734,11 @@ static void door_begin_transition(unsigned char* record)
     StMask(0, 0);
 }
 
+extern unsigned int g_modFrame;
+unsigned int g_quickDoorLast = 0;
+int g_quickDoorBlock = 0;
+int g_modEndRequested = 0;
+
 int door_try_enter(unsigned char* entry)
 {
     // 0x0041b400: already mid-transition (climb/door), do nothing.
@@ -6743,6 +6748,29 @@ int door_try_enter(unsigned char* entry)
 
     unsigned char* record = *(unsigned char**)(entry + 8);
     unsigned char  lock   = record[0xc];
+
+    // Crossover rooms (mod overlay) - no counterpart in the original.
+    //   0xFE: quick Silent Hill cut. After one, the doors stay quiet until the
+    //         player has stepped out of every door box (no call for a few
+    //         frames), so arriving next to the way back can never bounce him.
+    //   0xFD: the end of the playable area: fade out and return to the title.
+    if (record[0x08] == 0xFE || record[0x08] == 0xFD) {
+        if (g_quickDoorBlock) {
+            if (g_modFrame - g_quickDoorLast > 4) {
+                g_quickDoorBlock = 0;
+            } else {
+                g_quickDoorLast = g_modFrame;
+                return 0;
+            }
+        }
+        if (record[0x08] == 0xFD) {
+            if (!g_modEndRequested) {
+                g_modEndRequested = 1;
+                g_main_state_flags |= MSF_PLAYER_DEAD;
+            }
+            return 0;
+        }
+    }
 
     // 0x0041b41a: some doors are barred for one of the two characters.
     if ((lock & 0x40) != 0 && (g_playerEntity.id & 3) == 3) {

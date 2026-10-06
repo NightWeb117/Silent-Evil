@@ -35,11 +35,16 @@ ROOMS = {
 }
 # door: in room, trigger centre (x,z), size (w,d) metres, -> room, spawn (x,z), facing, entry cam
 DOORS = [
-    ('A', (-258.2, 245.2), (0.8, 1.6), 'B', (-259.6, 245.6), 'north', 0),
-    ('B', (-259.6, 246.4), (1.6, 0.8), 'A', (-258.9, 245.2), 'west', 3),
-    ('B', (-259.6, 229.0), (1.6, 0.8), 'C', (-258.5, 229.4), 'east', 0),
-    ('C', (-259.4, 229.4), (0.6, 1.6), 'B', (-259.6, 230.4), 'south', 1),
+    ('A', (-258.2, 245.2), (0.8, 1.6), 'B', (-259.6, 244.6), 'north', 0),
+    ('B', (-259.6, 246.4), (1.6, 0.8), 'A', (-259.9, 245.2), 'west', 3),
+    ('B', (-259.6, 229.0), (1.6, 0.8), 'C', (-257.5, 229.4), 'east', 0),
+    ('C', (-259.4, 229.4), (0.6, 1.6), 'B', (-259.6, 231.4), 'south', 1),
 ]
+# Spawn points sit ~1 m clear of the way back, so arriving never re-triggers it.
+
+# End of the playable area: Silent Hill's own nightmare trigger in this alley
+# (map0_s00 event 27 -> MapEvent_CutsceneAlleyNightmare, map point 26 at -252, 222).
+END_TRIGGER = ('C', (-252.0, 222.0), (2.4, 1.0))
 START_ROOM = 'A'
 
 # Atmosphere, following Silent Hill's own progression through this alley: the
@@ -222,7 +227,10 @@ def build_room(key, plan, plans, grid, reach, out_dir, template, log=print):
             ax1, az1 = grid.cell_center(iz0 + r1 * 3 + 2, ix0 + c1 * 3 + 2)
             p0 = fr.to_re(np.array([(ax0 - 0.05) * M, 0, (az0 - 0.05) * M]))
             p1 = fr.to_re(np.array([(ax1 + 0.05) * M, 0, (az1 + 0.05) * M]))
-            zones.append((k, (int(min(p0[0], p1[0])), int(min(p0[2], p1[2])), int(max(p0[0], p1[0])), int(max(p0[2], p1[2])))))
+            # max edges pulled in 2 units: two cameras' zones must never share a line,
+            # or a player standing on it flips between them every frame
+            zones.append((k, (int(min(p0[0], p1[0])), int(min(p0[2], p1[2])),
+                              int(max(p0[0], p1[0])) - 2, int(max(p0[2], p1[2])) - 2)))
     log('  %s: %d camera zones' % (key, len(zones)))
 
     # --- doors
@@ -237,6 +245,12 @@ def build_room(key, plan, plans, grid, reach, out_dir, template, log=print):
         door_recs.append(dict(x=int(min(a[0], b[0])), z=int(min(a[2], b[2])), w=int(abs(a[0] - b[0])), d=int(abs(a[2] - b[2])),
                               dest=ROOMS[dst]['id'], cam=cam_at(plans[dst], sx_, sz_), sx=int(sp[0]), sz=int(sp[2]),
                               dir=FACING[facing]))
+    if END_TRIGGER[0] == key:
+        (ex, ez), (ew, ed) = END_TRIGGER[1], END_TRIGGER[2]
+        a = fr.to_re(np.array([(ex - ew / 2) * M, 0, (ez - ed / 2) * M]))
+        b = fr.to_re(np.array([(ex + ew / 2) * M, 0, (ez + ed / 2) * M]))
+        door_recs.append(dict(x=int(min(a[0], b[0])), z=int(min(a[2], b[2])), w=int(abs(a[0] - b[0])),
+                              d=int(abs(a[2] - b[2])), dest=R['id'], cam=0, sx=0, sz=0, dir=0, kind=0xFD))
     start = None
     if 'start' in R:
         (sx_, sz_), facing = R['start']
@@ -330,7 +344,8 @@ def write_rdt(template, cams, zones, boxes, doors, start, bounds, atm=None):
         # +0x17 probe flags: 0x41 = fires when the player WALKS into the box (own position),
         # no action button - the alley has no visible doors
         # +0x08 = 0xFE: the crossover's quick cut (no RE door animation); +0x0B bit 0x40: no door sound
-        rec = struct.pack('<4H6B4H2B', dr['x'], dr['z'], dr['w'], dr['d'], 0xFE, 0x00, 0x04, dr['cam'] | 0x40, 0x00,
+        rec = struct.pack('<4H6B4H2B', dr['x'], dr['z'], dr['w'], dr['d'], dr.get('kind', 0xFE), 0x00, 0x04,
+                          dr['cam'] | 0x40, 0x00,
                           dr['dest'], dr['sx'], 0, dr['sz'], dr['dir'], 0x00, 0x41)
         assert len(rec) == 24
         ops += bytes([0x0C, slot]) + rec

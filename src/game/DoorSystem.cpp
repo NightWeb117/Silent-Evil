@@ -1487,6 +1487,10 @@ void room_transition_load(void)
     // panels through the TMD queue) while this task loads the destination room,
     // and clears the bit on teardown. The wait loop below polls that bit.
     if (quickDoor) {
+        extern unsigned int g_modFrame, g_quickDoorLast;
+        extern int g_quickDoorBlock;
+        g_quickDoorBlock = 1;
+        g_quickDoorLast = g_modFrame;
         crashlog_mark("door: quick (crossover) transition");
         Task_execute(1, (void*)QuickDoorTask);
     } else {
