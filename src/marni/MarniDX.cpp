@@ -1010,10 +1010,56 @@ void MarniDX::Clear(float r, float g, float b, float a)
             D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 }
 
+// Crossover diagnostics: set by the TMD renderer in generated rooms; the next
+// Present saves the frame to shots\shotNN.bmp (40 rotating slots).
+int g_modShotRequest = 0;
+
+static void SaveModShot(MarniDX* dx)
+{
+    static int slot = 0;
+    void* px = nullptr; DWORD w = 0, h = 0;
+    if (!dx->CaptureBackbufferToRGBA(&px, &w, &h) || !px) return;
+    int step = 1;
+    while (w / step > 640) step++;
+    int ow = (int)(w / step), oh = (int)(h / step);
+    int rowBytes = (ow * 3 + 3) & ~3;
+    CreateDirectoryA("shots", nullptr);
+    char name[64];
+    sprintf_s(name, sizeof(name), "shots\\shot%02d.bmp", slot);
+    slot = (slot + 1) % 40;
+    FILE* f = nullptr;
+    if (fopen_s(&f, name, "wb") == 0 && f) {
+        BYTE hdr[54] = { 'B', 'M' };
+        DWORD fileSize = 54 + rowBytes * oh;
+        memcpy(hdr + 2, &fileSize, 4);
+        DWORD off = 54, ihs = 40; memcpy(hdr + 10, &off, 4); memcpy(hdr + 14, &ihs, 4);
+        memcpy(hdr + 18, &ow, 4); memcpy(hdr + 22, &oh, 4);
+        hdr[26] = 1; hdr[28] = 24;
+        fwrite(hdr, 1, 54, f);
+        BYTE* row = (BYTE*)calloc(rowBytes, 1);
+        const BYTE* src = (const BYTE*)px;
+        for (int y = oh - 1; y >= 0 && row; y--) {
+            const BYTE* r = src + (size_t)(y * step) * w * 4;
+            for (int x = 0; x < ow; x++) {
+                const BYTE* q = r + (size_t)(x * step) * 4;
+                row[x * 3 + 0] = q[2]; row[x * 3 + 1] = q[1]; row[x * 3 + 2] = q[0];
+            }
+            fwrite(row, 1, rowBytes, f);
+        }
+        free(row);
+        fclose(f);
+    }
+    free(px);
+}
+
 void MarniDX::Present()
 {
     Impl* p = m_pImpl;
     if (!p || !p->swapChain) return;
+    if (g_modShotRequest) {
+        g_modShotRequest = 0;
+        SaveModShot(this);
+    }
 
     // Do NOT wait on a vblank by default. This engine paces itself in software:
     // the pump limits main_loop to one call per 33 ms (g_dwFrameIntervalMs) and

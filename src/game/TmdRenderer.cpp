@@ -389,6 +389,12 @@ extern int g_modOcclusion, g_modFog;
 static std::vector<float> s_depthNdc;     // CPU copy of the loaded image
 static int s_depthW = 0, s_depthH = 0;
 static int s_depthLogFrames = 0;
+static int s_shotTimer = 0;
+#ifdef _WIN32
+extern int g_modShotRequest;
+#else
+static int g_modShotRequest = 0;
+#endif
 
 static void ModLog(const char* fmt, ...)
 {
@@ -914,6 +920,11 @@ void FlushTmdObjects(void)
 
         // Mod backgrounds: lay the pre-rendered walls' depth down first.
         SceneDepth_Update(Marni_DX());
+        if (s_depthW > 0) {
+            // generated room: snapshot shortly after each cut, then every ~2 s
+            if (s_depthLogFrames == 4) s_shotTimer = 52;
+            if (++s_shotTimer >= 60) { s_shotTimer = 0; g_modShotRequest = 1; }
+        }
         if (s_depthLogFrames > 0 && collected > 0) {
             s_depthLogFrames--;
             float lo = 1e30f, hi = -1e30f, cx = 0, cy = 0;
