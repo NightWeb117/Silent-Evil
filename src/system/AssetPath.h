@@ -111,6 +111,15 @@ void         SetAssetMode(const char* mode);
 // The active overlay's folder name, "" when none (OG).
 const char*  GetAssetModeName(void);
 
+// Mod overlay (config.ini [Assets] ModPath). A folder laid out like the
+// region tree (enemy/, players/, stage1/ ...) holding only the files a mod
+// replaces. It is searched ahead of everything else - the content-mode overlay
+// and the base tree - so a generated mod (e.g. the Silent Hill crossover's
+// converted assets) never has to touch the user's own game install.
+// Pass NULL or "" to disable (the default: no probe, no cost).
+void         SetModOverlay(const char* path);
+const char*  GetModOverlay(void);
+
 // Rewrites whichever known asset-root form a path was compiled with (debug
 // ".\assets\USA\" or retail ".\usa\") to the current runtime root, writing the
 // result into `out` (outSize bytes) and returning `out`. Returns `path`

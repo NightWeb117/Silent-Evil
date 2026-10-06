@@ -82,6 +82,9 @@ jobs:
           New-Item -ItemType Directory -Force "stage/$name" | Out-Null
           Copy-Item "bin/$env:CONFIGURATION/residentevil.exe" "stage/$name"
           Copy-Item "bin/$env:CONFIGURATION/residentevil.pdb" "stage/$name"
+          # Silent Hill x RE crossover launcher (bring-your-own-games asset builder).
+          Copy-Item "bin/$env:CONFIGURATION/CrossoverLauncher.exe" "stage/$name"
+          Copy-Item "crossover/README.md" "stage/$name/CROSSOVER.md"
           # config.ini is runtime state (created/rewritten by the game on exit),
           # so it is not tracked; ship the documented template as the initial
           # file instead of relying on first-run generation.

@@ -30,6 +30,10 @@ Path=
 ; Which tree to run. USA = North American/GOG, JPN = Japanese PC (Biohazard).
 ; Selects the subfolder of Path that every asset uses.
 Version=USA
+; Mod overlay: a folder laid out like the region tree (enemy/, players/, ...)
+; holding only replaced files. Searched before everything else. The Silent
+; Hill crossover launcher writes this; leave it empty for the plain game.
+ModPath=
 
 [Save]
 ; Folder holding savedat*.dat, relative to the binary's directory unless

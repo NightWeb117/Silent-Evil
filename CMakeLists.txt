@@ -246,3 +246,14 @@ target_link_libraries(residentevil PRIVATE
     ${RE1_SDL2_LIB}
     ${RE1_AVFORMAT_LIB} ${RE1_AVCODEC_LIB} ${RE1_AVUTIL_LIB} ${RE1_SWRESAMPLE_LIB}
     m)
+
+# ---------------------------------------------------------------------------
+# Silent Hill x Resident Evil crossover: command-line asset builder.
+# Native (not -m32): it only reads the player's own disc image / RE files and
+# writes the mod overlay folder. The Windows launcher is CrossoverLauncher.vcxproj.
+add_executable(shre_convert
+    crossover/cli/shre_convert.cpp
+    crossover/lib/disc.cpp
+    crossover/lib/harry.cpp
+    crossover/lib/build.cpp)
+set_target_properties(shre_convert PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)

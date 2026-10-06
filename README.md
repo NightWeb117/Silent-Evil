@@ -1,5 +1,9 @@
 # Resident Evil 1 for PC Decompilation
 
+> **Silent Hill × Resident Evil crossover:** this fork adds `CrossoverLauncher.exe`, which
+> lets you play as Harry Mason using your own copies of both games — no assets included.
+> See [crossover/README.md](crossover/README.md).
+
 ## Introduction
 
 This is a decompilation Resident Evil 1 for PC released in 1997. The original game code, reverse-engineered from the Ghidra decompilation of the 1997 executable, is rebuilt on a modern rendering layer, for **two platforms**:

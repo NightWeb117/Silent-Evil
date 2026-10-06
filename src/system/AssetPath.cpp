@@ -67,6 +67,30 @@ static char s_modeName[16] = "";
 static char s_overlayRootBuf[260] = "";
 static const char* s_overlayRoot = NULL;
 
+// Mod overlay (config.ini [Assets] ModPath), searched ahead of the mode
+// overlay and the base tree. Empty = disabled.
+static char s_modRoot[260] = "";
+
+void SetModOverlay(const char* path)
+{
+    if (path == NULL || path[0] == '\0') {
+        s_modRoot[0] = '\0';
+        return;
+    }
+    strncpy(s_modRoot, path, sizeof(s_modRoot) - 2);
+    s_modRoot[sizeof(s_modRoot) - 2] = '\0';
+    size_t n = strlen(s_modRoot);
+    if (s_modRoot[n - 1] != '/' && s_modRoot[n - 1] != '\\') {
+        s_modRoot[n] = PATH_SEP;
+        s_modRoot[n + 1] = '\0';
+    }
+}
+
+const char* GetModOverlay(void)
+{
+    return s_modRoot;
+}
+
 // Which top-level folders a non-OG mode is allowed to take from the BASE tree.
 //
 // The intent is that a mode's own tree is authoritative for its content, so
@@ -348,6 +372,25 @@ const char* ResolveAssetRoot(const char* path, char* out, size_t outSize)
     if (match == NULL) return path; // Not an asset-rooted path.
 
     const char* tail = path + matchLen;
+
+    // Mod overlay first ([Assets] ModPath). Only the files a mod replaces live
+    // there; every miss falls through to the mode overlay / base tree below.
+    if (s_modRoot[0] != '\0') {
+        char candidate[260];
+        int c = sprintf_s(candidate, sizeof(candidate), "%s%s", s_modRoot, tail);
+        if (c >= 0) {
+            char probeBuf[260];
+            const char* probe = plat_normalize_path(candidate, probeBuf, sizeof(probeBuf));
+            FILE* fp = fopen(probe, "rb");
+            if (fp != NULL) {
+                fclose(fp);
+                int m = sprintf_s(out, outSize, "%s", candidate);
+                if (m >= 0) {
+                    return out;
+                }
+            }
+        }
+    }
 
     // Content-mode overlay first (config.ini [Game] Mode). A non-OG mode ships
     // only the files it changes or adds, so a miss here is the normal case and

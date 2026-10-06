@@ -362,6 +362,10 @@ void ConfigFile_EnsureExists(void)
         "; Which tree to run. USA = North American/GOG, JPN = Japanese PC\n"
         "; (Biohazard). Selects the subfolder of Path that every asset uses.\n"
         "Version=%s\n"
+        "; Mod overlay: a folder laid out like the region tree (enemy/, players/,\n"
+        "; ...) holding only replaced files. Searched before everything else.\n"
+        "; Written by the crossover launcher; leave empty for the plain game.\n"
+        "ModPath=\n"
         "\n"
         "[Save]\n"
         "; Folder holding savedat*.dat, relative to the binary's directory unless\n"
@@ -474,6 +478,9 @@ BOOL ConfigFile_Load(void)
     if (ReadValue(path, "Assets", "Path", value, sizeof(value)) && value[0] != '\0') {
         SetAssetBase(ResolveConfiguredPath(exeDir, value, resolved, sizeof(resolved)));
     }
+    if (ReadValue(path, "Assets", "ModPath", value, sizeof(value)) && value[0] != '\0') {
+        SetModOverlay(ResolveConfiguredPath(exeDir, value, resolved, sizeof(resolved)));
+    }
     if (ReadValue(path, "Save", "Path", value, sizeof(value)) && value[0] != '\0') {
         SetSaveRoot(ResolveConfiguredPath(exeDir, value, resolved, sizeof(resolved)));
     }
@@ -483,7 +490,8 @@ BOOL ConfigFile_Load(void)
         SetAssetVersion(version);
     }
 
-    dbg_printf("[CONFIG] assets=%s save=%s\n", GetAssetRoot(), GetSaveRoot());
+    dbg_printf("[CONFIG] assets=%s mods=%s save=%s\n", GetAssetRoot(),
+               GetModOverlay()[0] ? GetModOverlay() : "(none)", GetSaveRoot());
 
     g_debugFeaturesEnabled = ReadInt(path, "Debug", "EnableDebug",
 #ifdef _DEBUG
